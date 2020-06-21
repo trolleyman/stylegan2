@@ -33,7 +33,24 @@ _valid_configs = [
 
 #----------------------------------------------------------------------------
 
-def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, metrics):
+def get_valid_runids(result_dir):
+    for name in os.listdir(result_dir):
+        try:
+            runid = int(name.split('-')[0])
+        except ValueError:
+            continue
+
+        # Check that directory is valid
+        with open(os.path.join(result_dir, name, 'log.txt'), 'r') as f:
+            valid = False
+            for line in f.readlines():
+                if 'tick' in line and 'kimg' in line and 'lod' in line and 'minibatch' in line and 'time' in line:
+                    valid = True
+                    break
+
+        yield runid, name
+
+def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, metrics, resume_run_id=None):
     train     = EasyDict(run_func_name='training.training_loop.training_loop') # Options for training loop.
     G         = EasyDict(func_name='training.networks_stylegan2.G_main')       # Options for generator network.
     D         = EasyDict(func_name='training.networks_stylegan2.D_stylegan2')  # Options for discriminator network.
@@ -45,6 +62,75 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     grid      = EasyDict(size='8k', layout='random')                           # Options for setup_snapshot_image_grid().
     sc        = dnnlib.SubmitConfig()                                          # Options for dnnlib.submit_run().
     tf_config = {'rnd.np_random_seed': 1000}                                   # Options for tflib.init_tf().
+
+    if resume_run_id is not None:
+        # Resume from the ID of the results directory given
+        ids = sorted(get_valid_runids(result_dir))
+
+        if resume_run_id == 'recent':
+            resume_run_id = ids[-1][0]
+        else:
+            try:
+                resume_run_id = int(resume_run_id)
+            except ValueError:
+                raise RuntimeError('--resume argument is invalid (must be number, or "recent"): {}'.format(resume_run_id))
+
+        try:
+            rundir_name = next(x[1] for x in ids if x[0] == resume_run_id)
+        except StopIteration:
+            raise RuntimeError('Could not find results directory with run ID {} (options: {})'.format(resume_run_id, [x[0] for x in ids]))
+
+        # Find kimg & pkl file
+        rundir = os.path.join(result_dir, rundir_name)
+        pkls = [name for name in os.listdir(rundir) if name.startswith('network-snapshot-') and name.endswith('.pkl')]
+        kimgs = sorted([(int(pkl.replace('network-snapshot-', '').replace('.pkl', '')), pkl) for pkl in pkls], key=lambda x: x[0])
+        if len(kimgs) == 0:
+            raise RuntimeError('No network-snapshot-[0-9].pkl files found in {}'.format(rundir))
+        max_kimg = kimgs[-1][0]
+        pkl_name = kimgs[-1][1]
+
+        # Get wall clock time
+        logfilepath = os.path.join(rundir, 'log.txt')
+        with open(logfilepath, 'r') as f:
+            logfile = f.read()
+        for line in logfile.splitlines():
+            if 'kimg {}'.format(max_kimg) in line:
+                if 'time ' not in line:
+                    raise RuntimeError('Invalid log file: {}'.format(logfilepath))
+                line = line.split('time ')[1]
+                if 'sec/tick' not in line:
+                    raise RuntimeError('Invalid log file: {}'.format(logfilepath))
+                line = line.split('sec/tick')[0].strip()
+                # Parse d h m s, etc.
+                total_seconds_formatted = line
+                total_seconds = 0
+                if 'd' in line:
+                    arr = line.split('d')
+                    days = int(arr[0].strip())
+                    total_seconds += days * 24 * 60 * 60
+                    line = arr[1]
+                if 'h' in line:
+                    arr = line.split('h')
+                    hours = int(arr[0].strip())
+                    total_seconds += hours * 60 * 60
+                    line = arr[1]
+                if 'm' in line:
+                    arr = line.split('m')
+                    mins = int(arr[0].strip())
+                    total_seconds += mins * 60
+                    line = arr[1]
+                if 's' in line:
+                    arr = line.split('s')
+                    secs = int(arr[0].strip())
+                    total_seconds += secs
+                    line = arr[1]
+                break
+
+        # Set args for training
+        train.resume_pkl = os.path.join(rundir, pkl_name)
+        train.resume_kimg = max_kimg
+        train.resume_time = total_seconds
+        print('Resuming from run {}: kimg {}, time {}'.format(rundir_name, max_kimg, total_seconds_formatted))
 
     train.data_dir = data_dir
     train.total_kimg = total_kimg
@@ -168,6 +254,7 @@ def main():
     parser.add_argument('--gamma', help='R1 regularization weight (default is config dependent)', default=None, type=float)
     parser.add_argument('--mirror-augment', help='Mirror augment (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
     parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: %(default)s)', default='fid50k', type=_parse_comma_sep)
+    parser.add_argument('--resume', help='Resume from the run ID specified, or "recent" to pick the most recent run ID (default: %(default)s)', default=None, metavar='RUNID', dest='resume_run_id')
 
     args = parser.parse_args()
 
