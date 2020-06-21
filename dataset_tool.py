@@ -499,11 +499,17 @@ def create_celeba(tfrecord_dir, celeba_dir, cx=89, cy=121):
 
 #----------------------------------------------------------------------------
 
-def create_from_images(tfrecord_dir, image_dir, shuffle):
+def create_from_images(tfrecord_dir, image_dir, shuffle, start):
     print('Loading images from "%s"' % image_dir)
-    image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
+    image_filenames = sorted(glob.glob(os.path.join(image_dir, '*.png')) + glob.glob(os.path.join(image_dir, '*.gif')) + glob.glob(os.path.join(image_dir, '*.jpg')))
     if len(image_filenames) == 0:
         error('No input images found')
+
+    if start is not None:
+        print('Removing all image filenames that are before {}'.format(start))
+        before_len = len(image_filenames)
+        image_filenames = [x for x in image_filenames if os.path.basename(x) >= start]
+        print('Removed {:,} filenames(s)'.format(before_len - len(image_filenames)))
 
     img = np.asarray(PIL.Image.open(image_filenames[0]))
     resolution = img.shape[0]
@@ -630,6 +636,7 @@ def execute_cmdline(argv):
     p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
     p.add_argument(     'image_dir',        help='Directory containing the images')
     p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+    p.add_argument(     '--start',          help='Start from filename given (default: None)', default=None)
 
     p = add_command(    'create_from_hdf5', 'Create dataset from legacy HDF5 archive.',
                                             'create_from_hdf5 datasets/celebahq ~/downloads/celeba-hq-1024x1024.h5')
