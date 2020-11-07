@@ -16,6 +16,7 @@ import six.moves.queue as Queue # pylint: disable=import-error
 import traceback
 import numpy as np
 import tensorflow as tf
+import traceback
 import PIL.Image
 import dnnlib.tflib as tflib
 
@@ -521,21 +522,34 @@ def create_from_images(tfrecord_dir, image_dir, shuffle, start):
     if channels not in [1, 3]:
         error('Input images must be stored as RGB or grayscale')
 
+    exceptions = []
     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
         for idx in range(order.size):
-            print('{:,}/{:,}: {}'.format(idx, len(image_filenames), image_filenames[order[idx]])) # For debugging
-            img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
-            if channels == 3 and img.ndim == 2:
-                # Redo channels
-                PIL.Image.open(image_filenames[order[idx]]).convert('RGB').save(image_filenames[order[idx]])
-                img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
+            img_filename = image_filenames[order[idx]]
+            print('{:,}/{:,}: {}'.format(idx, len(image_filenames), img_filename)) # For debugging
+            try:
+                img = np.asarray(PIL.Image.open(img_filename))
+                if channels == 3 and img.ndim == 2:
+                    # Redo channels
+                    PIL.Image.open(img_filename).convert('RGB').save(img_filename)
+                    img = np.asarray(PIL.Image.open(img_filename))
 
-            if channels == 1:
-                img = img[np.newaxis, :, :] # HW => CHW
+                if channels == 1:
+                    img = img[np.newaxis, :, :] # HW => CHW
+                else:
+                    img = img.transpose([2, 0, 1]) # HWC => CHW
+            except Exception as e:
+                traceback.print_exc()
+                os.rename(img_filename, img_filename + '.err')
+                exceptions.append((img_filename, e))
+
             else:
-                img = img.transpose([2, 0, 1]) # HWC => CHW
-            tfr.add_image(img)
+                tfr.add_image(img)
+
+    print('=== Images & exceptions ===')
+    for (img_filename, e) in exceptions:
+        print('{}: {}'.format(img_filename, e))
 
 #----------------------------------------------------------------------------
 
